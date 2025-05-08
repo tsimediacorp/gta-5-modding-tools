@@ -9,34 +9,50 @@ class TextureFinderApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Texture & Asset Helper")
-        self.geometry("900x550")
+        self.geometry("900x650")  # Increased height for debug console
 
         # Main PanedWindow
-        paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        paned = ttk.PanedWindow(self, orient=tk.VERTICAL)  # Changed to vertical
         paned.pack(fill=tk.BOTH, expand=True)
 
+        # Top frame for main content
+        top_frame = ttk.Frame(paned)
+        paned.add(top_frame, weight=3)
+
+        # Bottom frame for debug console and progress
+        bottom_frame = ttk.Frame(paned)
+        paned.add(bottom_frame, weight=1)
+
+        # Create horizontal paned window for main content
+        main_paned = ttk.PanedWindow(top_frame, orient=tk.HORIZONTAL)
+        main_paned.pack(fill=tk.BOTH, expand=True)
+
         # Left frame: controls and folders
-        control_frame = ttk.Frame(paned, padding=10)
-        paned.add(control_frame, weight=1)
+        control_frame = ttk.Frame(main_paned, padding=10)
+        main_paned.add(control_frame, weight=1)
 
         # Right frame: output
-        output_frame = ttk.Frame(paned, padding=10)
-        paned.add(output_frame, weight=2)
+        output_frame = ttk.Frame(main_paned, padding=10)
+        main_paned.add(output_frame, weight=2)
 
         # Folder selectors
+        ttk.Label(control_frame, text="Step 1:", font=('TkDefaultFont', 9, 'bold')).pack(anchor=tk.W)
         self.processed_folder = tk.StringVar()
         ttk.Button(control_frame, text="Select Processed Textures Folder", command=self.select_processed_folder).pack(fill=tk.X)
         ttk.Label(control_frame, textvariable=self.processed_folder, wraplength=250).pack(fill=tk.X, pady=(5,10))
 
+        ttk.Label(control_frame, text="Step 2:", font=('TkDefaultFont', 9, 'bold')).pack(anchor=tk.W)
         self.original_folder = tk.StringVar()
         ttk.Button(control_frame, text="Select Original Textures Folder", command=self.select_original_folder).pack(fill=tk.X)
         ttk.Label(control_frame, textvariable=self.original_folder, wraplength=250).pack(fill=tk.X, pady=(5,10))
 
         # Search mode
+        ttk.Label(control_frame, text="Step 3:", font=('TkDefaultFont', 9, 'bold')).pack(anchor=tk.W)
         self.mode = tk.StringVar(value="name")
         modes = [("Search by Texture Name", "name"), ("Search by Folder Match", "folder")]
         for txt, val in modes:
-            ttk.Radiobutton(control_frame, text=txt, variable=self.mode, value=val).pack(anchor=tk.W)
+            ttk.Radiobutton(control_frame, text=txt, variable=self.mode, value=val, 
+                           command=self.update_search_mode).pack(anchor=tk.W)
 
         # Name search input
         self.name_entry = ttk.Entry(control_frame)
@@ -54,6 +70,23 @@ class TextureFinderApp(tk.Tk):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.listbox.config(yscrollcommand=scrollbar.set)
 
+        # Debug console
+        ttk.Label(bottom_frame, text="Debug Console:").pack(anchor=tk.W)
+        self.debug_text = tk.Text(bottom_frame, height=6, wrap=tk.WORD)
+        self.debug_text.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        debug_scrollbar = ttk.Scrollbar(bottom_frame, orient=tk.VERTICAL, command=self.debug_text.yview)
+        debug_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.debug_text.config(yscrollcommand=debug_scrollbar.set)
+
+        # Progress bar and status
+        progress_frame = ttk.Frame(bottom_frame)
+        progress_frame.pack(fill=tk.X, pady=(5,0))
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100)
+        self.progress_bar.pack(fill=tk.X, side=tk.LEFT, expand=True)
+        self.progress_label = ttk.Label(progress_frame, text="Ready")
+        self.progress_label.pack(side=tk.RIGHT, padx=5)
+
         # Menu bar
         menu_bar = tk.Menu(self)
         # Tools menu
@@ -67,15 +100,30 @@ class TextureFinderApp(tk.Tk):
         menu_bar.add_cascade(label="About", menu=about_menu)
         self.config(menu=menu_bar)
 
+    def log_debug(self, message):
+        self.debug_text.insert(tk.END, message + "\n")
+        self.debug_text.see(tk.END)
+        self.update_idletasks()
+
+    def update_progress(self, current, total, message=None):
+        if total > 0:
+            progress = (current / total) * 100
+            self.progress_var.set(progress)
+        if message:
+            self.progress_label.config(text=message)
+        self.update_idletasks()
+
     def select_processed_folder(self):
         path = filedialog.askdirectory()
         if path:
             self.processed_folder.set(path)
+            self.log_debug(f"Selected processed folder: {path}")
 
     def select_original_folder(self):
         path = filedialog.askdirectory()
         if path:
             self.original_folder.set(path)
+            self.log_debug(f"Selected original folder: {path}")
 
     def run_search(self):
         original = self.original_folder.get()
@@ -83,23 +131,58 @@ class TextureFinderApp(tk.Tk):
         if not original or not proc:
             messagebox.showwarning("Missing Folders", "Please select both the processed and original texture folders.")
             return
+
         self.listbox.delete(0, tk.END)
-        matches = set()
+        matches = []  # Changed from set to list to maintain order
+        self.progress_var.set(0)
+        self.log_debug("Starting search...")
+
+        # Count total folders for progress
+        total_folders = sum(1 for _ in os.walk(original))
+        current_folder = 0
+
         if self.mode.get() == "name":
             target = self.name_entry.get().strip().lower()
+            # Remove extension from target if present
+            target = os.path.splitext(target)[0]
+            self.log_debug(f"Searching for: {target}")
             for dirpath, _, files in os.walk(original):
+                current_folder += 1
+                self.update_progress(current_folder, total_folders, 
+                                   f"Searching folder {current_folder}/{total_folders}")
                 for f in files:
-                    if f.lower() == target:
-                        matches.add(dirpath)
+                    # Compare base filenames without extensions
+                    base_name = os.path.splitext(f)[0].lower()
+                    if base_name == target:
+                        matches.append((f, dirpath))
+                        self.log_debug(f"Found match in: {dirpath}")
         else:
             # compare against processed textures
-            names = {f.lower() for f in os.listdir(proc) if f.lower().endswith('.png')}
+            # Create a dictionary of base filenames without extensions
+            proc_files = {os.path.splitext(f)[0].lower(): f for f in os.listdir(proc) 
+                         if f.lower().endswith('.png')}
+            self.log_debug(f"Comparing against {len(proc_files)} processed textures")
+            
             for dirpath, _, files in os.walk(original):
+                current_folder += 1
+                self.update_progress(current_folder, total_folders,
+                                   f"Searching folder {current_folder}/{total_folders}")
                 for f in files:
-                    if f.lower() in names:
-                        matches.add(dirpath)
-        for m in sorted(matches):
-            self.listbox.insert(tk.END, m)
+                    if f.lower().endswith('.dds'):  # Only check DDS files
+                        base_name = os.path.splitext(f)[0].lower()
+                        if base_name in proc_files:
+                            matches.append((f"{proc_files[base_name]} → {f}", dirpath))
+                            self.log_debug(f"Found match: {proc_files[base_name]} → {f} in {dirpath}")
+
+        # Sort matches by filename
+        matches.sort(key=lambda x: x[0].lower())
+        
+        # Display matches in listbox
+        for match_text, dirpath in matches:
+            self.listbox.insert(tk.END, f"{match_text}\n  └─ {dirpath}")
+
+        self.log_debug(f"Search complete. Found {len(matches)} matches.")
+        self.update_progress(total_folders, total_folders, "Search complete")
 
     def open_converter(self):
         ConverterPopup(self)
@@ -109,6 +192,13 @@ class TextureFinderApp(tk.Tk):
 
     def open_about(self):
         AboutPopup(self)
+
+    def update_search_mode(self):
+        """Update the state of the name entry based on the selected search mode"""
+        if self.mode.get() == "folder":
+            self.name_entry.config(state='disabled')
+        else:
+            self.name_entry.config(state='normal')
 
 class ConverterPopup(tk.Toplevel):
     def __init__(self, parent):
